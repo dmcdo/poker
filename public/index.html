@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Clawd's Card Table</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" class="toast" hidden></div>
+<script src="/common.js"></script>
+<script>
+// The lobby: a host opens a room here, everyone else joins with its code.
+const GAMES = [['holdem', "Texas Hold'em"], ['draw', 'Five Card Draw'], ['21', '21']];
+let game = 'holdem';
+let betting = true;
+let rooms = null; // { open, max }
+
+function choiceRow(options, current, pick) {
+  return el('div', { class: 'row' }, ...options.map(([value, label]) =>
+    el('button', { type: 'button', 'aria-pressed': String(value === current), onclick: () => { pick(value); render(); } }, label)));
+}
+
+async function create() {
+  const room = await post('/api/rooms', { game, betting });
+  if (room) location.href = `/room/${room.code}`;
+  else refreshRooms();
+}
+
+function render() {
+  const full = rooms && rooms.open >= rooms.max;
+  const code = el('input', { placeholder: 'Room code', maxlength: 4, autocomplete: 'off', autocapitalize: 'characters', class: 'code' });
+  const join = (e) => {
+    e.preventDefault();
+    const c = code.value.trim().toUpperCase();
+    if (!/^[A-Z]{4}$/.test(c)) return toast('Room codes are 4 letters');
+    location.href = `/room/${c}`;
+  };
+  app.replaceChildren(el('main', {},
+    el('div', { class: 'join lobby' },
+      clawdEl(),
+      el('h1', {}, "Clawd's Card Table"),
+      el('div', { class: 'label section' }, 'Host a game'),
+      choiceRow(GAMES, game, (v) => { game = v; }),
+      choiceRow([[true, 'With betting'], [false, 'No betting']], betting, (v) => { betting = v; }),
+      el('button', { class: 'primary', disabled: full, onclick: create }, 'Create room'),
+      rooms && el('div', { class: 'label hint' }, full ? `All ${rooms.max} rooms are in use` : `${rooms.open} of ${rooms.max} rooms in use`),
+      el('div', { class: 'label section' }, 'Join a game'),
+      el('form', { onsubmit: join }, code, el('button', {}, 'Join room')))));
+}
+
+async function refreshRooms() {
+  try { rooms = await (await fetch('/api/rooms')).json(); } catch {}
+  render();
+}
+
+const gone = new URLSearchParams(location.search).get('gone');
+if (gone) {
+  toast(`Room ${gone} isn't open`);
+  history.replaceState(null, '', '/');
+}
+render();
+refreshRooms();
+</script>
+</body>
+</html>

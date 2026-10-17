@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Poker</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" class="toast" hidden></div>
+<script src="/common.js"></script>
+<script>
+// This page serves both poker games; the room's state says which one.
+let DRAW = false;
+let TITLE = 'Poker';
+const action = (type, extra) => post(`${API}/action`, { type, ...extra });
+const PHASE_LABEL = {
+  waiting: 'Between hands', preflop: 'Pre-flop', flop: 'Flop', turn: 'Turn', river: 'River',
+  predraw: 'First bet', draw: 'Draw', postdraw: 'Second bet',
+};
+
+// The raise amount survives re-renders and resets whenever the bet to beat changes.
+let raiseTo = 0;
+let raiseKey = '';
+// Positions of the cards picked to swap in the draw round; cleared each hand.
+let discards = new Set();
+let discardHand = 0;
+
+function seatBadge(p) {
+  if (p.won > 0) return el('span', { class: 'badge win' }, `Won ${p.won}` + (p.handName ? ` · ${p.handName}` : ''));
+  if (p.winner) return el('span', { class: 'badge win' }, `Wins · ${p.handName}`);
+  if (p.handName) return el('span', { class: 'badge' }, p.handName);
+  if (p.folded) return el('span', { class: 'badge lose' }, 'Fold');
+  if (p.lastAction) return el('span', { class: 'badge info' }, p.lastAction);
+  if (state.phase !== 'waiting' && !p.inHand) return el('span', { class: 'badge' }, 'Sitting out');
+  return el('span', { class: 'badge' });
+}
+
+function seatEl(p) {
+  const cls = ['seat', DRAW && 'five', p.id === state.turn && 'turn', !p.online && 'offline', p.folded && 'folded'].filter(Boolean).join(' ');
+  return el('div', { class: cls },
+    el('div', { class: 'name' },
+      p.name + (p.id === state.you ? ' (you)' : ''),
+      p.id === state.buttonId && el('span', { class: 'button-chip', title: 'Dealer button' }, 'D')),
+    el('div', { class: 'chips' },
+      (state.betting ? `${p.chips} chips` + (p.bet ? ` · bet ${p.bet}` : '') : `${p.wins} ${p.wins === 1 ? 'win' : 'wins'}`)
+      + (p.online ? '' : ' · away')),
+    el('div', { class: 'hand' }, ...p.cards.map(cardEl)),
+    seatBadge(p));
+}
+
+function raiseRows(o) {
+  const key = [state.handNo, state.phase, state.currentBet].join(':');
+  if (key !== raiseKey) { raiseKey = key; raiseTo = o.minRaiseTo; }
+  const { minRaiseTo: min, maxRaiseTo: max } = o;
+  raiseTo = Math.min(max, Math.max(min, raiseTo));
+
+  const label = () => (raiseTo === max ? `All-in ${max}` : state.currentBet === 0 ? `Bet ${raiseTo}` : `Raise to ${raiseTo}`);
+  const button = el('button', { class: 'primary', onclick: () => action('raise', { amount: raiseTo }) }, label());
+  if (min === max) return [el('div', { class: 'row' }, button)];
+
+  const slider = el('input', { type: 'range', min, max, step: 1, value: raiseTo, 'aria-label': 'Raise amount',
+    oninput: (e) => set(Number(e.target.value)) });
+  function set(v) {
+    raiseTo = Math.min(max, Math.max(min, Math.round(v)));
+    slider.value = raiseTo;
+    button.textContent = label();
+  }
+  // Pot-sized raise: call first, then raise by the size of the pot.
+  const potRaise = (fraction) => state.currentBet + Math.round((state.pot + o.toCall) * fraction);
+  const preset = (text, v) => el('button', { onclick: () => set(v) }, text);
+  return [
+    slider,
+    el('div', { class: 'row small' },
+      preset('−', raiseTo - state.bigBlind), preset('+', raiseTo + state.bigBlind),
+      preset('Min', min), preset('½ pot', potRaise(0.5)), preset('Pot', potRaise(1)), preset('All-in', max)),
+    el('div', { class: 'row' }, button),
+  ];
+}
+
+// The one card left if `i` were also discarded, when that would leave exactly one.
+function keptAfter(me, i) {
+  const left = me.cards.filter((c, j) => j !== i && !discards.has(j));
+  return left.length === 1 ? left[0] : null;
+}
+
+// My own hand, full size. From the first bet until I draw, tapping a card marks it to swap,
+// so I can pick ahead of my turn.
+function myHandEl(me, picking) {
+  if (state.handNo !== discardHand) { discardHand = state.handNo; discards = new Set(); }
+  return el('div', { class: 'hand' }, ...me.cards.map((c, i) => {
+    const card = cardEl(c);
+    if (!picking) return card;
+    card.classList.add('pick');
+    card.classList.toggle('discard', discards.has(i));
+    card.addEventListener('click', () => {
+      if (discards.has(i)) discards.delete(i);
+      else if (discards.size < state.maxDiscard) discards.add(i);
+      else if (discards.size < state.aceDiscard && keptAfter(me, i)?.r === 'A') discards.add(i);
+      else return toast(`You can swap up to ${state.maxDiscard} cards, or ${state.aceDiscard} if you keep and show an ace`);
+      render();
+    });
+    return card;
+  }));
+}
+
+function barEl(me) {
+  const rows = [];
+  let status;
+  const drawing = state.phase === 'draw' && state.turn === me.id;
+  const picking = (state.phase === 'predraw' || state.phase === 'draw') && me.inHand && !me.folded && !me.drew;
+  const myHand = DRAW && me.cards.length > 0 && myHandEl(me, picking);
+  if (state.phase === 'waiting') {
+    const ready = state.players.filter((p) => p.online && (p.chips > 0 || !state.betting)).length;
+    status = state.message || (ready < 2 ? 'Waiting for another player to sit down' : 'Ready when you are');
+    rows.push(el('div', { class: 'row' },
+      state.betting && me.chips === 0 && el('button', { onclick: () => action('rebuy') }, 'Rebuy 1000'),
+      el('button', { class: 'primary', disabled: ready < 2, onclick: () => action('deal') }, state.handNo ? 'Deal next hand' : 'Deal')));
+  } else if (drawing) {
+    status = el('span', {}, `Tap up to ${state.maxDiscard} cards to swap (${state.aceDiscard} if you keep an ace) · `, el('span', { id: 'timer' }));
+    rows.push(el('div', { class: 'row' },
+      el('button', { class: 'primary', onclick: () => action('draw', { cards: [...discards] }) },
+        discards.size > state.maxDiscard ? `Swap ${discards.size} · show ace`
+          : discards.size ? `Swap ${discards.size}` : 'Stand pat')));
+  } else if (state.turn === me.id) {
+    const o = state.options;
+    status = el('span', {}, 'Your turn · ', el('span', { id: 'timer' }));
+    rows.push(el('div', { class: 'row' },
+      el('button', { onclick: () => action('fold') }, 'Fold'),
+      o.toCall > 0
+        ? el('button', { class: o.canRaise ? '' : 'primary', onclick: () => action('call') }, o.toCall === me.chips ? `Call all-in ${o.toCall}` : `Call ${o.toCall}`)
+        : el('button', { onclick: () => action('check') }, 'Check')));
+    if (o.canRaise) rows.push(...raiseRows(o));
+  } else {
+    const current = state.players.find((p) => p.id === state.turn);
+    const waiting = picking && state.phase === 'draw' ? `Pick your swaps while ${current?.name} draws`
+      : `Waiting for ${current?.name}${state.phase === 'draw' ? ' to draw' : ''}`;
+    status = current ? el('span', {}, `${waiting} · `, el('span', { id: 'timer' }))
+      : state.betting ? ' ' : 'Dealing…';
+  }
+  return el('div', { class: 'bar' }, el('div', { class: 'bar-inner' }, myHand, el('div', { class: 'status' }, status), ...rows));
+}
+
+function render() {
+  if (!state) return;
+  DRAW = state.variant === 'draw';
+  TITLE = DRAW ? '5 Card Draw' : "Hold'em";
+  document.title = TITLE;
+  const me = state.players.find((p) => p.id === state.you);
+  if (!me) return app.replaceChildren(el('main', {}, joinEl(TITLE)));
+
+  const board = [0, 1, 2, 3, 4].map((i) => (state.board[i] ? cardEl(state.board[i]) : el('div', { class: 'card slot' })));
+  const main = el('main', {},
+    headerEl(TITLE, state.phase === 'waiting'),
+    el('section', { class: 'dealer' },
+      clawdEl(),
+      el('div', { class: 'label' }, `Clawd · dealer · ${PHASE_LABEL[state.phase]}`),
+      !DRAW && el('div', { class: 'hand' }, ...board),
+      el('div', { class: 'total' }, !state.betting ? 'No betting'
+        : state.phase === 'waiting' ? `Blinds ${state.bigBlind / 2}/${state.bigBlind}` : `Pot ${state.pot}`)),
+    el('section', { class: 'players' }, ...state.players.map(seatEl)));
+  const bar = barEl(me);
+  app.replaceChildren(main, bar);
+  main.style.paddingBottom = bar.offsetHeight + 16 + 'px';
+  tick();
+}
+
+connect();
+</script>
+</body>
+</html>

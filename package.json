@@ -1,0 +1,9 @@
+{
+  "name": "twenty-one",
+  "version": "1.0.0",
+  "private": true,
+  "description": "21 with friends: a small multiplayer blackjack table",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

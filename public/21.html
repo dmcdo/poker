@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>21</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" class="toast" hidden></div>
+<script src="/common.js"></script>
+<script>
+const action = (type, amount) => post(`${API}/action`, { type, amount });
+
+function badge(p) {
+  if (p.result && !state.betting) {
+    const { outcome } = p.result;
+    if (outcome === 'blackjack') return el('span', { class: 'badge win' }, 'Blackjack!');
+    if (outcome === 'win') return el('span', { class: 'badge win' }, 'Win');
+    if (outcome === 'push') return el('span', { class: 'badge info' }, 'Push');
+    return el('span', { class: 'badge lose' }, p.status === 'bust' ? 'Bust' : 'Lose');
+  }
+  if (p.result) {
+    const { outcome, delta } = p.result;
+    if (outcome === 'blackjack') return el('span', { class: 'badge win' }, `Blackjack! +${delta}`);
+    if (outcome === 'win') return el('span', { class: 'badge win' }, `Win +${delta}`);
+    if (outcome === 'push') return el('span', { class: 'badge info' }, 'Push');
+    return el('span', { class: 'badge lose' }, p.status === 'bust' ? `Bust ${delta}` : `Lose ${delta}`);
+  }
+  if (state.phase === 'playing') {
+    if (p.status === 'bust') return el('span', { class: 'badge lose' }, 'Bust');
+    if (p.status === 'blackjack') return el('span', { class: 'badge win' }, 'Blackjack!');
+    if (p.status === 'stand') return el('span', { class: 'badge info' }, 'Stand');
+    if (p.status === 'out') return el('span', { class: 'badge' }, 'Sitting out');
+  }
+  return el('span', { class: 'badge' });
+}
+
+function seatEl(p) {
+  const cls = ['seat', p.id === state.turn && 'turn', !p.online && 'offline'].filter(Boolean).join(' ');
+  return el('div', { class: cls },
+    el('div', { class: 'name' }, p.name + (p.id === state.you ? ' (you)' : '')),
+    el('div', { class: 'chips' },
+      (state.betting ? `${p.chips} chips` + (p.bet ? ` · bet ${p.bet}` : '') : `${p.wins} won · ${p.losses} lost`)
+      + (p.online ? '' : ' · away')),
+    el('div', { class: 'hand' }, ...p.hand.map(cardEl)),
+    el('div', { class: 'total' }, p.hand.length ? String(p.total) : ' '),
+    badge(p));
+}
+
+function barEl(me) {
+  const rows = [];
+  let status;
+  if (state.phase === 'betting' && !state.betting) {
+    status = 'Playing without betting';
+    rows.push(el('div', { class: 'row' }, el('button', { class: 'primary', onclick: () => action('deal') }, 'Deal')));
+  } else if (state.phase === 'betting') {
+    if (me.chips + me.bet < state.minBet) {
+      status = 'You are out of chips.';
+      rows.push(el('div', { class: 'row' }, el('button', { class: 'primary', onclick: () => action('rebuy') }, 'Rebuy 1000')));
+    } else {
+      status = me.bet ? `Your bet: ${me.bet}` : 'Place your bet';
+      const add = (n) => el('button', { disabled: me.chips < n, onclick: () => action('bet', me.bet + n) }, `+${n}`);
+      rows.push(el('div', { class: 'row' },
+        add(10), add(50), add(100),
+        el('button', { disabled: !me.bet, onclick: () => action('bet', 0) }, 'Clear')));
+      const canRebet = !me.bet && me.lastBet > 0 && me.lastBet <= me.chips;
+      rows.push(el('div', { class: 'row' },
+        canRebet && el('button', { onclick: () => action('bet', me.lastBet) }, `Rebet ${me.lastBet}`),
+        el('button', { class: 'primary', disabled: !me.bet, onclick: () => action('deal') }, 'Deal')));
+    }
+  } else if (state.turn === me.id) {
+    status = el('span', {}, 'Your turn · ', el('span', { id: 'timer' }));
+    rows.push(el('div', { class: 'row' },
+      el('button', { class: 'primary', onclick: () => action('hit') }, 'Hit'),
+      el('button', { onclick: () => action('stand') }, 'Stand'),
+      state.betting && el('button', { disabled: me.hand.length !== 2 || me.chips < me.bet, onclick: () => action('double') }, 'Double')));
+  } else {
+    const current = state.players.find((p) => p.id === state.turn);
+    status = current ? el('span', {}, `Waiting for ${current.name} · `, el('span', { id: 'timer' })) : 'Clawd is playing…';
+  }
+  return el('div', { class: 'bar' }, el('div', { class: 'bar-inner' }, el('div', { class: 'status' }, status), ...rows));
+}
+
+function render() {
+  if (!state) return;
+  const me = state.players.find((p) => p.id === state.you);
+  if (!me) return app.replaceChildren(el('main', {}, joinEl('21')));
+
+  const showDealerTotal = state.dealerTotal != null && state.dealer.length > 0;
+  app.replaceChildren(
+    el('main', {},
+      headerEl('21', state.phase === 'betting'),
+      el('section', { class: 'dealer' },
+        clawdEl(),
+        el('div', { class: 'label' }, 'Clawd · dealer'),
+        el('div', { class: 'hand' }, ...state.dealer.map(cardEl)),
+        el('div', { class: 'total' }, showDealerTotal ? String(state.dealerTotal) + (state.dealerTotal > 21 ? ' · bust' : '') : ' ')),
+      el('section', { class: 'players' }, ...state.players.map(seatEl))),
+    barEl(me));
+  tick();
+}
+
+connect();
+</script>
+</body>
+</html>
