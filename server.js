@@ -106,6 +106,7 @@ const server = http.createServer(async (req, res) => {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-store',
       Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no', // stop reverse proxies (e.g. on Render) from buffering the stream
     });
     clearTimeout(room.idleTimer);
     const disconnect = room.table.connect(res, url.searchParams.get('token') || '');
@@ -136,7 +137,12 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
+// Outlast the hosting load balancer's idle timeout so it never reuses a socket Node has closed.
+server.keepAliveTimeout = 120_000;
+server.headersTimeout = 121_000;
+
 server.listen(PORT, '0.0.0.0', () => {
+  if (process.env.RENDER_EXTERNAL_URL) return console.log(`Card table is running at ${process.env.RENDER_EXTERNAL_URL}`);
   console.log(`Card table is running. On this device: http://localhost:${PORT}`);
   try {
     for (const addrs of Object.values(os.networkInterfaces()))

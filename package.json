@@ -5,5 +5,8 @@
   "description": "21 with friends: a small multiplayer blackjack table",
   "scripts": {
     "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

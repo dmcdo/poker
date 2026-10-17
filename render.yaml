@@ -1,0 +1,13 @@
+# Render Blueprint. All game state is in memory, so this must stay a single instance.
+services:
+  - type: web
+    name: poker
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/rooms
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

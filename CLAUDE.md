@@ -13,6 +13,10 @@ A zero-dependency Node.js server for playing card games with friends on a local 
 - There are no tests. `poker.js` exports `evaluate`, `compare`, and `createGame`, so you can check hand evaluation from a one-off script, e.g. `node -e "const {evaluate}=require('./poker'); console.log(evaluate([...]))"`. Cards are `{ r: 'A', s: '♠' }`.
 - To drive a whole table from a script, call `createGame(variant, { betting, room: { code, number } })`, then `connect(fakeRes, token)`, `join`, and `action(token, { type: 'deal' })`, and set cards directly on `table.players[i].cards` (the returned object exposes `table`). Each `fakeRes` needs a `write` method that records each view. Views are sent as SSE `data: <json>` messages, but the table also writes `: ping` keep-alives every 20s, so only parse lines that start with `data: `.
 
+## Deployment
+
+Deployed on Render using the `render.yaml` Blueprint: a Node web service whose start command is `npm start`, with `/api/rooms` as its health check. All game state is in memory, so the service must run as one instance. Each deploy or restart closes every room, and the free plan's idle spin-down does the same. Render serves the app over HTTPS behind its own proxy, so keep the SSE `X-Accel-Buffering: no` header, the 20s keep-alive pings, and the long `server.keepAliveTimeout`.
+
 ## Architecture
 
 **Rooms (`server.js`)**: A host opens a room from the lobby (`POST /api/rooms` with `game`: `holdem` | `draw` | `21`, and `betting`). The room gets a random 4-letter code and the lowest free number from 1 to `MAX_ROOMS` (5). The room's betting mode is fixed when it is created. Friends join at `/room/<code>`, which serves `21.html` or `poker.html` depending on the room's game. Once a room has had no SSE connections for `ROOM_IDLE_MS` (60s), it closes. Visiting a closed or unknown room redirects to `/?gone=<code>`, and its API answers 404. `server.js` handles all HTTP: static files (a fixed `STATIC` map, so new public files must be added there), token and name validation, and the room routes `/api/rooms/<code>/events|join|action`. JSON body parsing and responses live in `http-util.js`.
